@@ -574,8 +574,12 @@ impl<T> From<T> for RwLock<T> {
 
 impl<'rwlock, T: ?Sized> RwLockReadGuard<'rwlock, T> {
     /// Create a new instance of `RwLockReadGuard<T>` from a `RwLock<T>`.
-    // SAFETY: if and only if `lock.inner.read()` (or `lock.inner.try_read()`) has been
-    // successfully called from the same thread before instantiating this object.
+    ///
+    /// # Safety
+    ///
+    /// This function is safe if and only if the same thread has successfully and safely called
+    /// `lock.inner.read()`, `lock.inner.try_read()`, or `lock.inner.downgrade()` before
+    /// instantiating this object.
     unsafe fn new(lock: &'rwlock RwLock<T>) -> LockResult<RwLockReadGuard<'rwlock, T>> {
         poison::map_result(lock.poison.borrow(), |()| RwLockReadGuard {
             data: unsafe { NonNull::new_unchecked(lock.data.get()) },
@@ -957,6 +961,25 @@ impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
             None => Err(orig),
         }
     }
+
+    /// Downgrades a write-locked `RwLockWriteGuard` into a read-locked [`RwLockReadGuard`].
+    ///
+    /// Atomically changes the state of the [`RwLock`] from exclusive mode into shared mode.
+    ///
+    /// MORE DOCS COMING SOON.
+    #[unstable(feature = "rwlock_downgrade", issue = "128203")]
+    pub fn downgrade(s: Self) -> RwLockReadGuard<'a, T> {
+        // SAFETY: We take ownership of a write guard, so we must already have the `RwLock` in write
+        // mode, satisfying the `downgrade` contract.
+        unsafe { s.lock.inner.downgrade() };
+
+        // SAFETY: We have just successfully called `downgrade`, so we fulfill the safety contract.
+        unsafe {
+            RwLockReadGuard::new(s.lock)
+                .expect("We had the exclusive lock so we can't have panicked while holding it")
+        }
+    }
+
 }
 
 impl<'a, T: ?Sized> MappedRwLockWriteGuard<'a, T> {
