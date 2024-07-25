@@ -136,8 +136,21 @@ impl RwLock {
             // Wait for the state to change.
             futex_wait(&self.state, state | READERS_WAITING, None);
 
-            // Spin again after waking up.
-            state = self.spin_read();
+            // FIXME this protocol does not work
+            state = self.state.load(Relaxed);
+            if state & MASK < MAX_READERS && !has_readers_waiting(state) {
+                match self.state.compare_exchange_weak(state, state + READ_LOCKED, Acquire, Relaxed)
+                {
+                    Ok(_) => return, // Locked!
+                    Err(s) => {
+                        state = s;
+                        continue;
+                    }
+                }
+            } else {
+                // Otherwise, spin again after waking up.
+                state = self.spin_read();
+            }
         }
     }
 
@@ -166,9 +179,26 @@ impl RwLock {
         }
     }
 
+    // FIXME this does not work
     #[inline]
     pub unsafe fn downgrade(&self) {
-        todo!()
+        // Removes all the write bits and adds a single read bit.
+        let old_state = self.state.fetch_sub(WRITE_LOCKED - READ_LOCKED, Relaxed);
+        debug_assert!(
+            is_write_locked(old_state),
+            "RwLock must be write locked to call `downgrade`"
+        );
+
+        let state = old_state - WRITE_LOCKED + READ_LOCKED;
+        debug_assert!(
+            !is_unlocked(state) && !is_write_locked(state),
+            "RwLock is somehow not in read mode after `downgrade`"
+        );
+
+        if has_readers_waiting(state) {
+            self.state.fetch_sub(READERS_WAITING, Relaxed);
+            futex_wake_all(&self.state);
+        }
     }
 
     #[cold]
