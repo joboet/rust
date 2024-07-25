@@ -43,7 +43,5 @@ impl RwLock {
     }
 
     #[inline]
-    pub unsafe fn downgrade(&self) {
-        todo!()
-    }
+    pub unsafe fn downgrade(&self) {}
 }

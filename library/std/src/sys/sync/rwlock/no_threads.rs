@@ -65,6 +65,6 @@ impl RwLock {
 
     #[inline]
     pub unsafe fn downgrade(&self) {
-        todo!()
+        assert_eq!(self.mode.replace(1), -1);
     }
 }
