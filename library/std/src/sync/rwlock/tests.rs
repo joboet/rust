@@ -496,3 +496,11 @@ fn panic_while_mapping_write_unlocked_poison() {
 
     drop(lock);
 }
+
+#[test]
+fn test_downgrade_basic() {
+    let r = RwLock::new(());
+
+    let write_guard = r.write().unwrap();
+    let _read_guard = RwLockWriteGuard::downgrade(write_guard);
+}

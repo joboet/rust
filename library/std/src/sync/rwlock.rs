@@ -4,7 +4,7 @@ mod tests;
 use crate::cell::UnsafeCell;
 use crate::fmt;
 use crate::marker::PhantomData;
-use crate::mem::ManuallyDrop;
+use crate::mem::{forget, ManuallyDrop};
 use crate::ops::{Deref, DerefMut};
 use crate::ptr::NonNull;
 use crate::sync::{poison, LockResult, TryLockError, TryLockResult};
@@ -969,13 +969,18 @@ impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
     /// MORE DOCS COMING SOON.
     #[unstable(feature = "rwlock_downgrade", issue = "128203")]
     pub fn downgrade(s: Self) -> RwLockReadGuard<'a, T> {
+        let lock = s.lock;
+
         // SAFETY: We take ownership of a write guard, so we must already have the `RwLock` in write
         // mode, satisfying the `downgrade` contract.
-        unsafe { s.lock.inner.downgrade() };
+        unsafe { lock.inner.downgrade() };
+
+        // We don't want to call the destructor since that calls `write_unlock`.
+        forget(s);
 
         // SAFETY: We have just successfully called `downgrade`, so we fulfill the safety contract.
         unsafe {
-            RwLockReadGuard::new(s.lock)
+            RwLockReadGuard::new(lock)
                 .expect("We had the exclusive lock so we can't have panicked while holding it")
         }
     }

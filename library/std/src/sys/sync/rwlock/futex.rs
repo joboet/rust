@@ -136,7 +136,8 @@ impl RwLock {
             // Wait for the state to change.
             futex_wait(&self.state, state | READERS_WAITING, None);
 
-            // FIXME this protocol does not work
+            // FIXME make sure this works
+            // FIXME this can probably be more elegant
             state = self.state.load(Relaxed);
             if state & MASK < MAX_READERS && !has_readers_waiting(state) {
                 match self.state.compare_exchange_weak(state, state + READ_LOCKED, Acquire, Relaxed)
@@ -147,10 +148,10 @@ impl RwLock {
                         continue;
                     }
                 }
-            } else {
-                // Otherwise, spin again after waking up.
-                state = self.spin_read();
             }
+
+            // Otherwise, spin again after waking up.
+            state = self.spin_read();
         }
     }
 
@@ -179,7 +180,7 @@ impl RwLock {
         }
     }
 
-    // FIXME this does not work
+    // FIXME make sure this works
     #[inline]
     pub unsafe fn downgrade(&self) {
         // Removes all the write bits and adds a single read bit.
