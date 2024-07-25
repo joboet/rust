@@ -451,6 +451,11 @@ impl RwLock {
         }
     }
 
+    #[inline]
+    pub unsafe fn downgrade(&self) {
+        todo!()
+    }
+
     /// # Safety
     /// * The lock must be exclusively owned by this thread.
     /// * There must be threads queued on the lock.

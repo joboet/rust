@@ -41,4 +41,9 @@ impl RwLock {
     pub unsafe fn write_unlock(&self) {
         unsafe { self.inner.unlock() };
     }
+
+    #[inline]
+    pub unsafe fn downgrade(&self) {
+        todo!()
+    }
 }
