@@ -979,7 +979,6 @@ impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
                 .expect("We had the exclusive lock so we can't have panicked while holding it")
         }
     }
-
 }
 
 impl<'a, T: ?Sized> MappedRwLockWriteGuard<'a, T> {
