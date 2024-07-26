@@ -453,7 +453,46 @@ impl RwLock {
 
     #[inline]
     pub unsafe fn downgrade(&self) {
-        todo!()
+        // Atomically set to read-locked with a single reader, without any waiting threads.
+        if let Err(mut state) = self.state.compare_exchange(
+            without_provenance_mut(LOCKED),
+            without_provenance_mut(LOCKED | SINGLE),
+            Release,
+            Relaxed,
+        ) {
+            // Attempt to grab the queue lock.
+            loop {
+                let next = state.map_addr(|addr| addr | QUEUE_LOCKED);
+                match self.state.compare_exchange(state, next, AcqRel, Relaxed) {
+                    Err(new_state) => state = new_state,
+                    Ok(new_state) => {
+                        assert_eq!(
+                            new_state.mask(!MASK).addr(),
+                            LOCKED | QUEUED | QUEUE_LOCKED,
+                            "{:p}",
+                            new_state
+                        );
+                        state = new_state;
+                        break;
+                    }
+                }
+            }
+
+            assert_eq!(state.mask(!MASK).addr(), LOCKED | QUEUED | QUEUE_LOCKED);
+
+            // SAFETY: We have the queue lock so all safety contracts are fulfilled.
+            let tail = unsafe { add_backlinks_and_find_tail(to_node(state)).as_ref() };
+
+            // Increment the reader count from 0 to 1.
+            assert_eq!(
+                tail.next.0.fetch_byte_add(SINGLE, AcqRel).addr(),
+                0,
+                "Reader count was not zero while we had the write lock"
+            );
+
+            // Release the queue lock.
+            self.state.fetch_byte_sub(QUEUE_LOCKED, Release);
+        }
     }
 
     /// # Safety
@@ -547,6 +586,7 @@ impl RwLock {
                 loop {
                     let prev = unsafe { current.as_ref().prev.get() };
                     unsafe {
+                        // There must be threads waiting.
                         Node::complete(current);
                     }
                     match prev {
