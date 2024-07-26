@@ -1,8 +1,8 @@
 use crate::sync::atomic::{AtomicUsize, Ordering};
 use crate::sync::mpsc::channel;
 use crate::sync::{
-    Arc, MappedRwLockReadGuard, MappedRwLockWriteGuard, RwLock, RwLockReadGuard, RwLockWriteGuard,
-    TryLockError,
+    Arc, Barrier, MappedRwLockReadGuard, MappedRwLockWriteGuard, RwLock, RwLockReadGuard,
+    RwLockWriteGuard, TryLockError,
 };
 use crate::thread;
 use rand::Rng;
@@ -503,4 +503,82 @@ fn test_downgrade_basic() {
 
     let write_guard = r.write().unwrap();
     let _read_guard = RwLockWriteGuard::downgrade(write_guard);
+}
+
+#[test]
+fn test_downgrade_frob() {
+    const N: u32 = 10;
+    const M: usize = if cfg!(miri) { 100 } else { 1000 };
+
+    let r = Arc::new(RwLock::new(()));
+
+    let (tx, rx) = channel::<()>();
+    for _ in 0..N {
+        let tx = tx.clone();
+        let r = r.clone();
+        thread::spawn(move || {
+            let mut rng = crate::test_helpers::test_rng();
+            for _ in 0..M {
+                if rng.gen_bool(1.0 / (N as f64)) {
+                    drop(RwLockWriteGuard::downgrade(r.write().unwrap()));
+                } else {
+                    drop(r.read().unwrap());
+                }
+            }
+            drop(tx);
+        });
+    }
+    drop(tx);
+    let _ = rx.recv();
+}
+
+#[test]
+fn test_downgrade_readers() {
+    const R: usize = 16;
+    const N: usize = 1000;
+
+    let r = Arc::new(RwLock::new(0));
+    let b = Arc::new(Barrier::new(R + 1));
+
+    // Create the writing thread.
+    let r_writer = r.clone();
+    let b_writer = b.clone();
+    thread::spawn(move || {
+        for i in 0..N {
+            let mut write_guard = r_writer.write().unwrap();
+            *write_guard = i;
+
+            let read_guard = RwLockWriteGuard::downgrade(write_guard);
+            assert_eq!(*read_guard, i);
+
+            // Wait for all readers to observe the new value.
+            b_writer.wait();
+        }
+    });
+
+    for _ in 0..R {
+        let r = r.clone();
+        let b = b.clone();
+        thread::spawn(move || {
+            // Every reader thread needs to observe every value up to `N`.
+            for i in 0..N {
+                let read_guard = r.read().unwrap();
+                assert_eq!(*read_guard, i);
+                drop(read_guard);
+
+                // Wait for everyone to read and for the writer to change the value again.
+                b.wait();
+                // Spin until the writer has changed the value.
+
+                loop {
+                    let read_guard = r.read().unwrap();
+                    assert!(*read_guard >= i);
+
+                    if *read_guard > i {
+                        break;
+                    }
+                }
+            }
+        });
+    }
 }
