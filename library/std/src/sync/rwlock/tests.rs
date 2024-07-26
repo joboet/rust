@@ -1,3 +1,4 @@
+use crate::hint::spin_loop;
 use crate::sync::atomic::{AtomicUsize, Ordering};
 use crate::sync::mpsc::channel;
 use crate::sync::{
@@ -537,6 +538,9 @@ fn test_downgrade_readers() {
     const R: usize = 16;
     const N: usize = 1000;
 
+    // Starts up 1 writing thread and `R` reader threads.
+    // The writer thread will constantly update the value inside the `RwLock`, and this test will
+    // only pass if every reader observes all values between 0 and `N`.
     let r = Arc::new(RwLock::new(0));
     let b = Arc::new(Barrier::new(R + 1));
 
@@ -581,4 +585,83 @@ fn test_downgrade_readers() {
             }
         });
     }
+}
+
+#[test]
+fn test_downgrade_atomic() {
+    const R: usize = 16;
+
+    let r = Arc::new(RwLock::new(0));
+    // The number of reader threads that observe the correct value.
+    let observers = Arc::new(AtomicUsize::new(0));
+
+    let w = r.clone();
+    let mut main_write_guard = w.write().unwrap();
+
+    // While the current thread is holding the write lock, spawn several reader threads and an evil
+    // writer thread.
+    // Each of the threads will attempt to read the `RwLock` and go to sleep because we have the
+    // write lock.
+    // We need at least 1 reader thread to observe what the main thread writes, otherwise that means
+    // the evil writer thread got in front of every single reader.
+
+    // FIXME
+    // Should we actually require that every reader observe the first change?
+    // This is a matter of protocol rather than correctness...
+
+    let mut reader_handles = Vec::with_capacity(R);
+
+    for _ in 0..R {
+        let r = r.clone();
+        let observers = observers.clone();
+        let handle = thread::spawn(move || {
+            // Will go to sleep since the main thread initially has the write lock.
+            let read_guard = r.read().unwrap();
+            if *read_guard == 1 {
+                observers.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+
+        reader_handles.push(handle);
+    }
+
+    let evil = r.clone();
+    let evil_handle = thread::spawn(move || {
+        // Will go to sleep since the main thread initially has the write lock.
+        let mut evil_guard = evil.write().unwrap();
+        *evil_guard = 2;
+    });
+
+    // FIXME Come up with a better way to make sure everyone is sleeping.
+    // Make sure that everyone else is actually sleeping.
+    let spin = 1000000;
+    for _ in 0..spin {
+        spin_loop();
+    }
+
+    // Once everyone is asleep, set the value to 1.
+    *main_write_guard = 1;
+
+    // Atomically downgrade the write guard into a read guard.
+    // This should wake up all of the reader threads, and allow them to also take the read lock.
+    let main_read_guard = RwLockWriteGuard::downgrade(main_write_guard);
+
+    // If the above is not atomic, then it is possible for the evil thread to get in front of the
+    // readers and change the value to 2 instead.
+    assert_eq!(*main_read_guard, 1, "`downgrade` was not atomic");
+
+    // By dropping all of the read guards, we allow the evil thread to make the change.
+    drop(main_read_guard);
+
+    for handle in reader_handles {
+        handle.join().unwrap();
+    }
+
+    // Wait for the evil thread to set the value to 2.
+    evil_handle.join().unwrap();
+
+    let final_check = r.read().unwrap();
+    assert_eq!(*final_check, 2);
+
+    assert!(observers.load(Ordering::Relaxed) > 0, "No readers observed the correct value");
 }
