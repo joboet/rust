@@ -7,7 +7,7 @@ use crate::marker::PhantomData;
 use crate::mem::{forget, ManuallyDrop};
 use crate::ops::{Deref, DerefMut};
 use crate::ptr::NonNull;
-use crate::sync::{poison, LockResult, TryLockError, TryLockResult};
+use crate::sync::{poison, LockResult, PoisonError, TryLockError, TryLockResult};
 use crate::sys::sync as sys;
 
 /// A reader-writer lock
@@ -966,23 +966,20 @@ impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
     ///
     /// Atomically changes the state of the [`RwLock`] from exclusive mode into shared mode.
     ///
-    /// MORE DOCS COMING SOON.
+    /// FIXME MORE DOCS COMING SOON.
     #[unstable(feature = "rwlock_downgrade", issue = "128203")]
     pub fn downgrade(s: Self) -> RwLockReadGuard<'a, T> {
         let lock = s.lock;
+
+        // We don't want to call the destructor since that calls `write_unlock`.
+        forget(s);
 
         // SAFETY: We take ownership of a write guard, so we must already have the `RwLock` in write
         // mode, satisfying the `downgrade` contract.
         unsafe { lock.inner.downgrade() };
 
-        // We don't want to call the destructor since that calls `write_unlock`.
-        forget(s);
-
         // SAFETY: We have just successfully called `downgrade`, so we fulfill the safety contract.
-        unsafe {
-            RwLockReadGuard::new(lock)
-                .expect("We had the exclusive lock so we can't have panicked while holding it")
-        }
+        unsafe { RwLockReadGuard::new(lock).unwrap_or_else(PoisonError::into_inner) }
     }
 }
 
