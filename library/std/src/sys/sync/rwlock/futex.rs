@@ -57,6 +57,22 @@ fn is_read_lockable(state: u32) -> bool {
 }
 
 #[inline]
+fn is_read_lockable_after_wakeup(state: u32) -> bool {
+    // We make a special case for checking if we can read-lock _after_ a reader thread that went to
+    // sleep has been woken up by a call to `downgrade`.
+    //
+    // `downgrade` will wake up all readers and place the lock in read mode. Thus, there should be
+    // no readers waiting and the lock should not be write-locked.
+    //
+    // If the lock happens to be unlocked, then we defer to the normal `is_read_lockable`
+    // check that will prioritize any waiting writers first.
+    state & MASK < MAX_READERS
+        && !has_readers_waiting(state)
+        && !is_write_locked(state)
+        && !is_unlocked(state)
+}
+
+#[inline]
 fn has_reached_max_readers(state: u32) -> bool {
     state & MASK == MAX_READERS
 }
@@ -103,11 +119,12 @@ impl RwLock {
 
     #[cold]
     fn read_contended(&self) {
+        let mut has_slept = false;
         let mut state = self.spin_read();
 
         loop {
             // If we can lock it, lock it.
-            if is_read_lockable(state) {
+            if has_slept && is_read_lockable_after_wakeup(state) || is_read_lockable(state) {
                 match self.state.compare_exchange_weak(state, state + READ_LOCKED, Acquire, Relaxed)
                 {
                     Ok(_) => return, // Locked!
@@ -118,6 +135,7 @@ impl RwLock {
                 }
             }
 
+            // FIXME shouldn't this be an assert?
             // Check for overflow.
             if has_reached_max_readers(state) {
                 panic!("too many active read locks on RwLock");
@@ -135,22 +153,11 @@ impl RwLock {
 
             // Wait for the state to change.
             futex_wait(&self.state, state | READERS_WAITING, None);
+            has_slept = true;
 
-            // FIXME make sure this works
-            // FIXME this can probably be more elegant
-            state = self.state.load(Relaxed);
-            if state & MASK < MAX_READERS && !has_readers_waiting(state) {
-                match self.state.compare_exchange_weak(state, state + READ_LOCKED, Acquire, Relaxed)
-                {
-                    Ok(_) => return, // Locked!
-                    Err(s) => {
-                        state = s;
-                        continue;
-                    }
-                }
-            }
-
-            // Otherwise, spin again after waking up.
+            // Spin again after waking up.
+            // Note that if we were waken up by a call to `downgrade`, we will be read-locked, which
+            // means that this will stop spinning immediately.
             state = self.spin_read();
         }
     }
@@ -180,7 +187,6 @@ impl RwLock {
         }
     }
 
-    // FIXME make sure this works
     #[inline]
     pub unsafe fn downgrade(&self) {
         // Removes all the write bits and adds a single read bit.
