@@ -215,12 +215,9 @@ impl<T: ?Sized> *const T {
     #[stable(feature = "strict_provenance", since = "1.84.0")]
     pub fn with_addr(self, addr: usize) -> Self {
         // This should probably be an intrinsic to avoid doing any sort of arithmetic, but
-        // meanwhile, we can implement it with `wrapping_offset`, which preserves the pointer's
-        // provenance.
-        let self_addr = self.addr() as isize;
-        let dest_addr = addr as isize;
-        let offset = dest_addr.wrapping_sub(self_addr);
-        self.wrapping_byte_offset(offset)
+        // meanwhile, we can implement it with a mask and an offset, which preserves the
+        // pointer's provenance.
+        self.mask(0).wrapping_byte_add(addr)
     }
 
     /// Creates a new pointer by mapping `self`'s address to a new one, preserving the
