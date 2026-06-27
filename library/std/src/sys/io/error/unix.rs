@@ -45,7 +45,6 @@ pub fn errno() -> i32 {
 /// Sets the platform-specific value of errno
 // needed for readdir and syscall!
 #[cfg(all(not(target_os = "dragonfly"), not(target_os = "vxworks"), not(target_os = "rtems")))]
-#[allow(dead_code)] // but not all target cfgs actually end up using it
 #[inline]
 pub fn set_errno(e: i32) {
     unsafe { *errno_location() = e as c_int }
@@ -57,15 +56,32 @@ pub fn errno() -> i32 {
     unsafe { libc::errnoGet() }
 }
 
+#[cfg(target_os = "vxworks")]
+#[inline]
+pub fn set_errno(e: i32) {
+    unsafe { libc::errnoSet(e) };
+}
+
 #[cfg(target_os = "rtems")]
 #[inline]
 pub fn errno() -> i32 {
     unsafe extern "C" {
         #[thread_local]
-        static _tls_errno: c_int;
+        static mut _tls_errno: c_int;
     }
 
     unsafe { _tls_errno as i32 }
+}
+
+#[cfg(target_os = "rtems")]
+#[inline]
+pub fn set_errno(e: i32) {
+    unsafe extern "C" {
+        #[thread_local]
+        static mut _tls_errno: c_int;
+    }
+
+    unsafe { _tls_errno = e };
 }
 
 #[cfg(target_os = "dragonfly")]
@@ -73,14 +89,13 @@ pub fn errno() -> i32 {
 pub fn errno() -> i32 {
     unsafe extern "C" {
         #[thread_local]
-        static errno: c_int;
+        static mut errno: c_int;
     }
 
     unsafe { errno as i32 }
 }
 
 #[cfg(target_os = "dragonfly")]
-#[allow(dead_code)]
 #[inline]
 pub fn set_errno(e: i32) {
     unsafe extern "C" {
@@ -88,9 +103,7 @@ pub fn set_errno(e: i32) {
         static mut errno: c_int;
     }
 
-    unsafe {
-        errno = e;
-    }
+    unsafe { errno = e };
 }
 
 #[inline]
